@@ -312,3 +312,6 @@ Compares every rule against all earlier rules and classifies interactions:
 - [x] CAN Gateway Module — CanRule parser, analyze_can, test_message, UI tab, and tests
 
 
+How to Run This Project:- 
+cd firescript
+.venv/bin/streamlit run app.py

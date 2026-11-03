@@ -18,27 +18,12 @@ from firescript import (
     PacketError,
     import_iptables,
 )
-from firescript.can_rules import (
-    parse_can_rules,
-    test_message,
-    CanMessageError,
-)
-from firescript.can_analyzer import analyze_can
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 _SAMPLE_PATH = pathlib.Path(__file__).parent / "sample_rules.fs"
-
-_SAMPLE_CAN_RULES = """# Sample CAN Gateway Rules
-allow can from bus infotainment to bus display id 0x200-0x2FF
-deny  can from bus infotainment to bus powertrain id 0x100-0x1FF
-allow can from bus infotainment to bus powertrain id 0x120
-allow can from bus obd to bus any id 0x7DF
-allow can from bus body to bus chassis id 0x300
-deny  can from bus any to bus any id any
-"""
 
 # Badge colours (background, text) per finding kind
 _KIND_STYLE: dict[str, tuple[str, str]] = {
@@ -86,9 +71,9 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🔥 FireScript – Firewall & Gateway Rule Analyzer")
+st.title("🔥 FireScript – Firewall Rule Analyzer")
 st.caption(
-    "Write firewall & gateway rules, detect conflicts, and simulate packets/messages — "
+    "Write firewall rules, detect conflicts, and simulate packets — "
     "purely in software without touching real hardware or networks."
 )
 
@@ -103,48 +88,41 @@ if "rule_text" not in st.session_state:
         st.session_state.rule_text = "# Write your FireScript rules here\n"
     st.session_state.editor = st.session_state.rule_text
 
-if "can_rule_text" not in st.session_state:
-    st.session_state.can_rule_text = _SAMPLE_CAN_RULES
-    st.session_state.can_editor = _SAMPLE_CAN_RULES
-
 # ---------------------------------------------------------------------------
 # Section 3 – File upload (top sidebar so it sets text before the editor)
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
     st.header("📂 Load a rules file")
-    uploaded = st.file_uploader("Upload a .fs file", type=["fs", "txt"])
+    uploaded = st.file_uploader("Upload a .fs file", type=["fs", "txt"], key="fs_file_uploader")
     if uploaded is not None:
-        content = uploaded.read().decode("utf-8", errors="replace")
-        if content != st.session_state.rule_text:
-            st.session_state.rule_text = content
+        file_sig = f"{uploaded.name}_{uploaded.size}"
+        if st.session_state.get("_loaded_file_sig") != file_sig:
+            st.session_state._loaded_file_sig = file_sig
+            content = uploaded.getvalue().decode("utf-8", errors="replace")
             st.session_state.editor = content
+            st.session_state.rule_text = content
             st.session_state.pop("import_result", None)
-            st.success(f"Loaded **{uploaded.name}** ({len(content.splitlines())} lines)")
+            st.rerun()
+        st.success(f"Loaded **{uploaded.name}** ({len(st.session_state.get('editor', '').splitlines())} lines)")
+    else:
+        st.session_state.pop("_loaded_file_sig", None)
 
     st.divider()
     st.markdown(
-        "**IP rule format**\n"
+        "**Rule format**\n"
         "```\n"
         "allow tcp from 10.0.0.0/24 to any port 80\n"
         "deny  any from any to any  port any\n"
-        "```\n\n"
-        "**CAN rule format**\n"
         "```\n"
-        "deny can from bus infotainment to bus powertrain id 0x100-0x1FF\n"
-        "allow can from bus any to bus any id any\n"
-        "```\n"
-        "`#` starts a comment. Standard 11-bit CAN IDs are 0x000 to 0x7FF."
+        "`#` starts a comment."
     )
 
 # ---------------------------------------------------------------------------
-# Main Tabs: IP Firewall and CAN Gateway
+# Section 1 – Rule Editor & Analyzer
 # ---------------------------------------------------------------------------
 
-tab_ip, tab_can = st.tabs(["🌐 IP Network Firewall", "🚗 CAN Gateway Rules (Vehicle Bus)"])
-
-with tab_ip:
-    st.header("① Rule Editor & Analyzer")
+st.header("① Rule Editor & Analyzer")
 
 # ---- Import from iptables expander ----
 with st.expander("📥 Import from iptables (`iptables -S` / `iptables-save`)", expanded=("import_result" in st.session_state)):
@@ -209,15 +187,28 @@ with st.expander("📥 Import from iptables (`iptables -S` / `iptables-save`)", 
         if res.warnings:
             st.warning("\n\n".join(f"• {w}" for w in res.warnings))
 
-rule_text: str = st.text_area(
-    label="FireScript rules",
-    value=st.session_state.rule_text,
-    height=260,
-    key="editor",
-    help="One rule per line.  '#' starts a comment.",
-)
-# Keep session state in sync with the widget
-st.session_state.rule_text = rule_text
+col_editor, col_numbered = st.columns([1, 1])
+
+with col_editor:
+    st.markdown("##### ✏️ FireScript Rules (Editor)")
+    rule_text: str = st.text_area(
+        label="FireScript rules editor",
+        height=320,
+        key="editor",
+        label_visibility="collapsed",
+        help="One rule per line. '#' starts a comment.",
+    )
+    # Keep session state in sync with the widget
+    st.session_state.rule_text = rule_text
+
+with col_numbered:
+    st.markdown("##### 🔢 Rules with Line Numbers (Inspector)")
+    with st.container(height=320):
+        st.code(
+            rule_text if rule_text.strip() else "# No rules in editor",
+            language="bash",
+            line_numbers=True,
+        )
 
 analyze_clicked = st.button("🔍 Analyze rules", type="primary")
 
@@ -266,32 +257,31 @@ if analyze_clicked or True:
                 rows_html = ""
                 for f in findings:
                     kind_cell   = _kind_badge(f.kind)
-                    rule_cell   = f"<td style='text-align:center'>{f.rule_line}</td>"
-                    other_cell  = f"<td style='text-align:center'>{f.other_line}</td>"
-                    expl_cell   = f.explanation
+                    rule_cell   = f"<td style='text-align:center;padding:8px 10px'>{f.rule_line}</td>"
+                    other_cell  = f"<td style='text-align:center;padding:8px 10px'>{f.other_line}</td>"
+                    expl_cell   = f"<td style='padding:8px 10px'>{f.explanation}</td>"
 
                     rows_html += (
-                        f"<tr>"
-                        f"<td>{kind_cell}</td>"
+                        f"<tr style='border-bottom:1px solid rgba(128,128,128,0.2)'>"
+                        f"<td style='padding:8px 10px'>{kind_cell}</td>"
                         f"{rule_cell}"
                         f"{other_cell}"
-                        f"<td>{expl_cell}</td>"
+                        f"{expl_cell}"
                         f"</tr>"
                     )
 
                 table_html = f"""
                 <table style="width:100%;border-collapse:collapse;font-size:0.9em">
                   <thead>
-                    <tr style="background:#f0f0f0;text-align:left">
-                      <th style="padding:6px 10px">Kind</th>
-                      <th style="padding:6px 10px;text-align:center">Rule line</th>
-                      <th style="padding:6px 10px;text-align:center">Conflicts with</th>
-                      <th style="padding:6px 10px">Explanation</th>
+                    <tr style="background:rgba(128, 128, 128, 0.2);text-align:left;border-bottom:2px solid rgba(128, 128, 128, 0.3)">
+                      <th style="padding:8px 10px;color:inherit">Kind</th>
+                      <th style="padding:8px 10px;text-align:center;color:inherit">Rule line</th>
+                      <th style="padding:8px 10px;text-align:center;color:inherit">Conflicts with</th>
+                      <th style="padding:8px 10px;color:inherit">Explanation</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {"".join(f'<tr style="border-bottom:1px solid #ddd">{rows_html}</tr>'
-                             if False else rows_html)}
+                    {rows_html}
                   </tbody>
                 </table>
                 """
@@ -358,137 +348,4 @@ if submitted:
         except PacketError as exc:
             st.error(f"Invalid packet description: {exc}")
 
-
-# ---------------------------------------------------------------------------
-# Tab 2 – CAN Gateway Rules
-# ---------------------------------------------------------------------------
-
-with tab_can:
-    st.header("① CAN Gateway Rule Editor & Analyzer")
-    st.info(
-        "⚠️ **Simulation Notice:** This module provides simplified static verification and "
-        "filtering simulation for Controller Area Network (CAN) gateway rules. "
-        "It is designed for educational/research purposes and is **not connected to real vehicles or physical ECUs**."
-    )
-
-    can_rule_text: str = st.text_area(
-        label="CAN gateway rules",
-        value=st.session_state.can_rule_text,
-        height=240,
-        key="can_editor",
-        help="One rule per line. '#' starts a comment. Format: allow|deny can from bus <name|any> to bus <name|any> id <hex|range|any>",
-    )
-    st.session_state.can_rule_text = can_rule_text
-
-    can_analyze_clicked = st.button("🔍 Analyze CAN rules", type="primary", key="btn_analyze_can")
-
-    can_parse_result = parse_can_rules(can_rule_text)
-
-    if can_parse_result.errors:
-        st.subheader("⛔ Syntax & Validation Errors")
-        for err in can_parse_result.errors:
-            st.markdown(
-                f'<p style="color:#d62728;margin:2px 0">'
-                f'<b>Line {err.line}:</b> {err.message}</p>',
-                unsafe_allow_html=True,
-            )
-
-    can_rules = can_parse_result.rules
-    if not can_rules:
-        if can_analyze_clicked:
-            st.info("No valid CAN rules to analyze.")
-    else:
-        can_findings = analyze_can(can_rules)
-        if can_analyze_clicked:
-            counts = {}
-            for f in can_findings:
-                counts[f.kind] = counts.get(f.kind, 0) + 1
-
-            cols = st.columns(len(_KIND_STYLE) + 1)
-            cols[0].metric("✅ Valid rules", len(can_rules))
-            for idx, kind in enumerate(["SHADOWED", "REDUNDANT", "CONTRADICTION", "GENERALIZATION"]):
-                n = counts.get(kind, 0)
-                cols[idx + 1].metric(kind.capitalize(), n)
-
-            st.divider()
-
-            if not can_findings:
-                st.success("✅ No conflicts or redundancies found in CAN gateway rules.")
-            else:
-                st.subheader(f"📋 CAN Rule Findings ({len(can_findings)} total)")
-                rows_html = ""
-                for f in can_findings:
-                    kind_cell   = _kind_badge(f.kind)
-                    rule_cell   = f"<td style='text-align:center'>{f.rule_line}</td>"
-                    other_cell  = f"<td style='text-align:center'>{f.other_line}</td>"
-                    expl_cell   = f.explanation
-                    rows_html += (
-                        f"<tr>"
-                        f"<td>{kind_cell}</td>"
-                        f"{rule_cell}"
-                        f"{other_cell}"
-                        f"<td>{expl_cell}</td>"
-                        f"</tr>"
-                    )
-
-                table_html = f"""
-                <table style="width:100%;border-collapse:collapse;font-size:0.9em">
-                  <thead>
-                    <tr style="background:#f0f0f0;text-align:left">
-                      <th style="padding:6px 10px">Kind</th>
-                      <th style="padding:6px 10px;text-align:center">Rule line</th>
-                      <th style="padding:6px 10px;text-align:center">Conflicts with</th>
-                      <th style="padding:6px 10px">Explanation</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows_html}
-                  </tbody>
-                </table>
-                """
-                st.markdown(table_html, unsafe_allow_html=True)
-
-    st.divider()
-    st.header("② Test a CAN Message")
-
-    with st.form("can_message_form"):
-        c1, c2, c3 = st.columns(3)
-        sim_from_bus = c1.text_input("Source Bus", value="infotainment", help="Source CAN bus (e.g. infotainment, obd, body)")
-        sim_to_bus   = c2.text_input("Destination Bus", value="powertrain", help="Destination CAN bus (e.g. powertrain, chassis, display)")
-        sim_can_id   = c3.text_input("CAN Identifier (11-bit)", value="0x120", help="Hex (e.g. 0x120) or integer (0-2047)")
-
-        can_sim_submitted = st.form_submit_button("▶ Simulate CAN message", type="primary")
-
-    if can_sim_submitted:
-        if not sim_from_bus.strip() or not sim_to_bus.strip():
-            st.warning("Please provide both source and destination bus names.")
-        else:
-            current_can_rules = parse_can_rules(st.session_state.can_rule_text).rules
-            try:
-                sim_res = test_message(current_can_rules, sim_from_bus.strip(), sim_to_bus.strip(), sim_can_id.strip())
-                bg, fg = _ACTION_STYLE[sim_res.action]
-                icon = "✅" if sim_res.action == "allow" else "🚫"
-                st.markdown(
-                    f'<div style="background:{bg};color:{fg};padding:12px 18px;'
-                    f'border-radius:6px;font-size:1.2em;font-weight:bold;">'
-                    f'{icon} &nbsp; CAN Message {sim_res.action.upper()}ED</div>',
-                    unsafe_allow_html=True,
-                )
-                st.write("")
-                if sim_res.matched_rule:
-                    st.markdown(
-                        f"**Matched rule — Line {sim_res.matched_rule.line}:** "
-                        f"`{sim_res.matched_rule.text}`"
-                    )
-                else:
-                    st.markdown("**No rule matched** — default policy applied.")
-
-                st.caption(sim_res.reason)
-
-                if sim_res.also_matched:
-                    with st.expander(f"⚠️ {len(sim_res.also_matched)} hidden rule(s) would also have matched"):
-                        for r in sim_res.also_matched:
-                            st.markdown(f"- **Line {r.line}:** `{r.text}`")
-            except CanMessageError as exc:
-                st.error(f"Invalid message parameter: {exc}")
 

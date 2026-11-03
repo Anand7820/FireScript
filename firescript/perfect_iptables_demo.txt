@@ -1,0 +1,43 @@
+# ==============================================================================
+# 100% Perfect Production iptables Dump (Zero Conflicts, Zero Warnings)
+# Organization: Enterprise Cloud Infrastructure
+# Format: iptables-save / iptables -S
+# ==============================================================================
+# All rules are strictly partitioned by authorized subnet and service port.
+# Result after import:
+#   - Converted: 11 rules
+#   - Skipped:   0 rules
+#   - Warnings:  0
+#   - Shadowed:  0
+#   - Redundant: 0
+#   - Contradiction: 0
+#   - Generalization: 0
+# ==============================================================================
+
+# Default Chain Policies
+-P INPUT DROP
+-P FORWARD DROP
+-P OUTPUT ACCEPT
+
+# 1. Web & Application Tier (HTTP 80 & HTTPS 443)
+-A INPUT -d 172.16.0.10/32 -p tcp -m tcp --dport 80 -j ACCEPT
+-A INPUT -d 172.16.0.10/32 -p tcp -m tcp --dport 443 -j ACCEPT
+
+# 2. Remote Administration (Restricted to IT Bastion Jumpbox)
+-A INPUT -s 192.168.1.50/32 -d 10.0.0.0/24 -p tcp -m tcp --dport 22 -j ACCEPT
+
+# 3. Core Network Infrastructure (DNS 53 & NTP 123)
+-A INPUT -s 10.0.0.0/16 -d 1.1.1.1/32 -p udp -m udp --dport 53 -j ACCEPT
+-A INPUT -s 10.0.0.0/16 -d 10.0.0.1/32 -p udp -m udp --dport 123 -j ACCEPT
+
+# 4. Production Database Tier (PostgreSQL 5432, MySQL 3306, Redis 6379)
+-A INPUT -s 10.100.1.0/24 -d 10.100.2.10/32 -p tcp -m tcp --dport 5432 -j ACCEPT
+-A INPUT -s 10.100.1.0/24 -d 10.100.2.20/32 -p tcp -m tcp --dport 3306 -j ACCEPT
+-A INPUT -s 10.100.1.0/24 -d 10.100.2.30/32 -p tcp -m tcp --dport 6379 -j ACCEPT
+
+# 5. Monitoring & Metrics (Prometheus 9090 & Node Exporter 9100)
+-A INPUT -s 10.200.0.5/32 -d 10.100.0.0/16 -p tcp -m tcp --dport 9090 -j ACCEPT
+-A INPUT -s 10.200.0.5/32 -d 10.100.0.0/16 -p tcp -m tcp --dport 9100 -j ACCEPT
+
+# 6. Network Diagnostics (ICMP Ping from Corporate LAN)
+-A INPUT -s 192.168.1.0/24 -p icmp -j ACCEPT
